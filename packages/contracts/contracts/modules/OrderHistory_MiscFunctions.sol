@@ -259,7 +259,7 @@ contract OrderHistory_MiscFunctions is BZxStorage, BZxProxiable, MiscFunctions {
     }
 
     /// @dev Returns a LoanPosition object.
-    /// @param positionId A unqiue id representing the loan position.
+    /// @param positionId A unique id representing the loan position.
     function getLoanPosition(
         uint256 positionId)
         public

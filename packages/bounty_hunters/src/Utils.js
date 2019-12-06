@@ -3,6 +3,7 @@ const minimist = require("minimist");
 const snooze = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const idleCycle = async () => {
+  // noinspection InfiniteLoopJS
   while (true) {
     await snooze(1000);
   }

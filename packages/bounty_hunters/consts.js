@@ -13,7 +13,7 @@ const Consts = {
   // the gas price to use for liquidation transactions
   defaultGasPrice: BigNumber(12).times(10 ** 9),
 
-  // if true, recheck loans on each now block
+  // if true, recheck loans on each new block
   // if false, check on an interval set by checkIntervalSecs
   trackBlocks: false,
 
@@ -25,7 +25,10 @@ const Consts = {
   pingIntervalSecs: 30,
 
   // max number of active loans returned in a batch
-  batchSize: 10
+  batchSize: 1,
+
+  // max number of blocks after which liquidation request is considered as old
+  maxBlocksDelay: 3,
 };
 
 module.exports = Consts;
