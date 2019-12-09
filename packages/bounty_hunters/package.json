@@ -13,13 +13,13 @@
     "url": "https://github.com/bZxNetwork/bZx-monorepo/issues"
   },
   "dependencies": {
-    "@bzxnetwork/bzx.js": "0.5.0",
     "bignumber.js": "^7.0.1",
     "bull": "^3.10.0",
     "forever-monitor": "^1.7.1",
     "ioredis": "^4.5.1",
     "minimist": "^1.2.0",
     "moment": "^2.22.1",
+    "ramda": "^0.26.1",
     "redlock": "^4.0.0",
     "truffle-hdwallet-provider": "^1.0.0-web3one.1",
     "truffle-privatekey-provider": "https://github.com/bZxNetwork/truffle-privatekey-provider",

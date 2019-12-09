@@ -29,10 +29,7 @@ const processBatchOrders = (bzx, redis, redlock, queue, blockNumber, sender, loa
         if (isLiquidationInProgress) {
           return;
         }
-        return bzx.getMarginLevels({
-          loanOrderHash,
-          trader
-        });
+        return bzx.getMarginLevels(loanOrderHash, trader);
       }).then(marginData => {
         // logger.log("producer",  marginData);
         const { initialMarginAmount, maintenanceMarginAmount, currentMarginAmount } = marginData;
@@ -79,10 +76,7 @@ const processBlockLoans = async (bzx, redis, redlock, queue, sender) => {
       Logger.log("producer", `Next batch. Current block: ${blockNumber}`);
       Logger.log("producer", `Sender account: ${sender}\n`);
 
-      const loansObjArray = await bzx.getActiveLoans({
-        start: position, // starting item
-        count: consts.batchSize // max number of items returned
-      });
+      const loansObjArray = await bzx.getActiveLoans(position, consts.batchSize);
       // logger.log("producer", loansObjArray);
 
       await processBatchOrders(bzx, redis, redlock, queue, blockNumber, sender, loansObjArray, position);

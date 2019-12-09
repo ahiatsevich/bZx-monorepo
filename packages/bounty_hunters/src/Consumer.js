@@ -1,3 +1,5 @@
+const BigNumber = require("bignumber.js");
+
 const { Logger } = require("./LoggerFactory");
 const consts = require("./../consts");
 
@@ -34,12 +36,9 @@ const liquidateLoan = async (bzx, sender, loanOrderHash, trader, blockNumber) =>
     gasPrice: consts.defaultGasPrice // TODO @bshevchenko: should be dynamically calculated
   };
 
-  const txObj = await bzx.liquidateLoan({
-    loanOrderHash,
-    trader,
-    getObject: true,
-    liquidateAmount: 1237237, // TODO @bshevchenko
-  });
+  const liquidateAmount = (new BigNumber(0)).integerValue(); // TODO
+
+  const txObj = await bzx.liquidateLoan(loanOrderHash, trader, liquidateAmount, true);
 
   try {
     // const gasEstimate = await txObj.estimateGas(txOpts); TODO @bshevchenko: return
