@@ -108,6 +108,7 @@ class BZx {
     const data = await this.contract.methods
       .getMarginLevels(loanOrderHash, trader)
       .call();
+    console.log('DATA 0', data);
     return {
       initialMarginAmount: data[0],
       maintenanceMarginAmount: data[1],

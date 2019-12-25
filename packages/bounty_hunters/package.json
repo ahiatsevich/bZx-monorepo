@@ -22,7 +22,7 @@
     "ramda": "^0.26.1",
     "redlock": "^4.0.0",
     "truffle-hdwallet-provider": "^1.0.0-web3one.1",
-    "truffle-privatekey-provider": "https://github.com/bZxNetwork/truffle-privatekey-provider",
+    "truffle-privatekey-provider": "^1.3.0",
     "web3": "1.0.0-beta.34",
     "winston": "^3.0.0"
   },

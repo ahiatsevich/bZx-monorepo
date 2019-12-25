@@ -24,6 +24,14 @@ const processBatchOrders = (bzx, redis, redlock, queue, blockNumber, sender, loa
   for (let i = 0; i < loansObjArray.length; i++) { // TODO @bshevchenko: refactor with queue?
     const { loanOrderHash, trader, loanEndUnixTimestampSec } = loansObjArray[i];
     const idx = position + i;
+
+    // TODO @bshevchenko: remove this after tests
+    if (loanOrderHash !== '0xb77ef4d44921f346d48c33902de3bce4a89087aad60c7373394a51092c9824f0'
+        || trader !== '0xdf2db45ed0df076e5d6d302b416a5971ff5ad61f') {
+      Logger.log("producer", `skip ${loanOrderHash} ${trader}`);
+      continue;
+    }
+
     promises.push(new Promise((resolve, reject) => {
       getIsLiquidationInProgress(redis, loanOrderHash).then(isLiquidationInProgress => {
         if (isLiquidationInProgress) {
@@ -32,6 +40,7 @@ const processBatchOrders = (bzx, redis, redlock, queue, blockNumber, sender, loa
         return bzx.getMarginLevels(loanOrderHash, trader);
       }).then(marginData => {
         // logger.log("producer",  marginData);
+        console.log('DATA', marginData);
         const { initialMarginAmount, maintenanceMarginAmount, currentMarginAmount } = marginData;
 
         const isUnSafe = !BigNumber(currentMarginAmount).gt(maintenanceMarginAmount);
@@ -77,7 +86,6 @@ const processBlockLoans = async (bzx, redis, redlock, queue, sender) => {
       Logger.log("producer", `Sender account: ${sender}\n`);
 
       const loansObjArray = await bzx.getActiveLoans(position, consts.batchSize);
-      // logger.log("producer", loansObjArray);
 
       await processBatchOrders(bzx, redis, redlock, queue, blockNumber, sender, loansObjArray, position);
       if (loansObjArray.length < consts.batchSize) {

@@ -25,7 +25,7 @@ const Consts = {
   pingIntervalSecs: 30,
 
   // max number of active loans returned in a batch
-  batchSize: 1,
+  batchSize: 30,
 
   // max number of blocks after which liquidation request is considered as old
   maxBlocksDelay: 3,
