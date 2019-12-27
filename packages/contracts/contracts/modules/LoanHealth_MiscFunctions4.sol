@@ -159,6 +159,62 @@ contract LoanHealth_MiscFunctions4 is BZxStorage, BZxProxiable, OrderClosingFunc
         return true;
     }
 
+    function getCloseAmount(
+        bytes32 loanOrderHash,
+        address trader,
+        uint256 maxCloseAmount)
+        public
+        view
+        returns (uint256, uint256, bool)
+    {
+        uint256 closeAmount;
+        bool isHasEnded = false;
+
+        LoanPosition storage loanPosition = loanPositions[loanPositionsIds[loanOrderHash][trader]];
+        LoanOrder storage loanOrder = orders[loanOrderHash];
+
+        uint256 currentMargin = OracleInterface(oracleAddresses[loanOrder.oracleAddress]).getCurrentMarginAmount(
+            loanOrder.loanTokenAddress,
+            loanPosition.positionTokenAddressFilled,
+            loanPosition.collateralTokenAddressFilled,
+            loanPosition.loanTokenAmountFilled,
+            loanPosition.positionTokenAmountFilled,
+            loanPosition.collateralTokenAmountFilled
+        );
+
+        if ((!DEBUG_MODE && block.timestamp < loanPosition.loanEndUnixTimestampSec) ||
+            (DEBUG_MODE && currentMargin <= loanOrder.maintenanceMarginAmount)) {
+            // loan hasn't ended
+
+            uint256 desiredMargin = loanOrder.maintenanceMarginAmount
+            .add(10 ether); // 10 percentage points above maintenance
+
+            uint256 normalizedCollateral = currentMargin
+            .mul(loanPosition.loanTokenAmountFilled)
+            .div(desiredMargin);
+
+            if (loanPosition.loanTokenAmountFilled > normalizedCollateral) {
+                closeAmount = loanPosition.loanTokenAmountFilled
+                .sub(normalizedCollateral);
+            } else {
+                closeAmount = loanPosition.loanTokenAmountFilled;
+            }
+        } else {
+            isHasEnded = true;
+
+            // loans passed their end dates will fully closed if possible
+            closeAmount = loanPosition.loanTokenAmountFilled;
+        }
+
+        if (maxCloseAmount == 0 || maxCloseAmount > loanPosition.loanTokenAmountFilled) {
+            closeAmount = Math.min256(closeAmount, loanPosition.loanTokenAmountFilled);
+        } else {
+            closeAmount = Math.min256(closeAmount, maxCloseAmount);
+        }
+
+        return (closeAmount, currentMargin, isHasEnded);
+    }
+
     /// @dev Checks that a position meets the conditions for liquidation, then closes the position and loan (or extends in some cases)
     /// @param loanOrderHash A unique hash representing the loan order
     /// @param trader The trader of the position
@@ -187,54 +243,24 @@ contract LoanHealth_MiscFunctions4 is BZxStorage, BZxProxiable, OrderClosingFunc
             revert("BZxLoanHealth::liquidatePosition: loanOrder.loanTokenAddress == address(0)");
         }
 
-        uint256 currentMargin = OracleInterface(oracleAddresses[loanOrder.oracleAddress]).getCurrentMarginAmount(
-            loanOrder.loanTokenAddress,
-            loanPosition.positionTokenAddressFilled,
-            loanPosition.collateralTokenAddressFilled,
-            loanPosition.loanTokenAmountFilled,
-            loanPosition.positionTokenAmountFilled,
-            loanPosition.collateralTokenAmountFilled
-        );
-        if (!DEBUG_MODE && block.timestamp < loanPosition.loanEndUnixTimestampSec && currentMargin > loanOrder.maintenanceMarginAmount) {
-            revert("BZxLoanHealth::liquidatePosition: loan is healthy");
-        }
-
         uint256 closeAmount;
+        uint256 currentMargin;
+        bool isHasEnded;
 
-        if ((!DEBUG_MODE && block.timestamp < loanPosition.loanEndUnixTimestampSec) ||
-            (DEBUG_MODE && currentMargin <= loanOrder.maintenanceMarginAmount)) {
-            // loan hasn't ended
+        (closeAmount, currentMargin, isHasEnded) = getCloseAmount(loanOrderHash, trader, maxCloseAmount);
 
-            uint256 desiredMargin = loanOrder.maintenanceMarginAmount
-                .add(10 ether); // 10 percentage points above maintenance
-
-            uint256 normalizedCollateral = currentMargin
-                .mul(loanPosition.loanTokenAmountFilled)
-                .div(desiredMargin);
-
-            if (loanPosition.loanTokenAmountFilled > normalizedCollateral) {
-                closeAmount = loanPosition.loanTokenAmountFilled
-                    .sub(normalizedCollateral);
-            } else {
-                closeAmount = loanPosition.loanTokenAmountFilled;
-            }
-        } else {
+        if (isHasEnded) {
             // check if we need to roll-over without closing (iToken loans)
             if(_handleRollOver(
-                loanOrder,
-                loanPosition
-            )) {
+                    loanOrder,
+                    loanPosition
+                )) {
                 return true;
             }
-
-            // loans passed their end dates will fully closed if possible
-            closeAmount = loanPosition.loanTokenAmountFilled;
         }
 
-        if (maxCloseAmount == 0 || maxCloseAmount > loanPosition.loanTokenAmountFilled) {
-            closeAmount = Math.min256(closeAmount, loanPosition.loanTokenAmountFilled);
-        } else {
-            closeAmount = Math.min256(closeAmount, maxCloseAmount);
+        if (!DEBUG_MODE && block.timestamp < loanPosition.loanEndUnixTimestampSec && currentMargin > loanOrder.maintenanceMarginAmount) {
+            revert("BZxLoanHealth::liquidatePosition: loan is healthy");
         }
 
         uint256 loanAmountBought;
