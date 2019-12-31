@@ -1,3 +1,4 @@
+const BigNumber = require("bignumber.js");
 const { cleanData } = require("./Utils");
 
 const addresses = {
@@ -86,6 +87,29 @@ const abi = [
     "payable": false,
     "stateMutability": "nonpayable",
     "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [
+      {
+        "name": "loanOrderHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "trader",
+        "type": "address"
+      }
+    ],
+    "name": "getCloseAmount",
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "payable": false,
+    "stateMutability": "nonpayable",
+    "type": "function"
   }
 ];
 
@@ -108,12 +132,17 @@ class BZx {
     const data = await this.contract.methods
       .getMarginLevels(loanOrderHash, trader)
       .call();
-    console.log('DATA 0', data);
     return {
       initialMarginAmount: data[0],
       maintenanceMarginAmount: data[1],
       currentMarginAmount: data[2]
     };
+  }
+
+  async getCloseAmount(loanOrderHash, trader) {
+    return new BigNumber(await this.contract.methods
+      .getCloseAmount(loanOrderHash, trader)
+      .call());
   }
 
   async liquidateLoan(loanOrderHash, trader, liquidateAmount, getObject) {

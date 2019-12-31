@@ -7,6 +7,10 @@ const getIsLiquidationInProgress = (redis, loanOrderHash) => redis.get(`bzx:liqu
 
 const publishLiquidationRequest = (idx, redis, redlock, liquidateQueue, request) => {
   redlock.lock("bzx:processing:lock", 250).then(lock => {
+    if (request.force) {
+      liquidateQueue.add(request).then(() => lock.unlock());
+      return;
+    }
     getIsLiquidationInProgress(redis, request.loanOrderHash).then(e => {
       if (e) {
         Logger.log("consumer", `${idx} :: submit skip ${request.blockNumber}:${request.loanOrderHash}`);
@@ -39,8 +43,6 @@ const processBatchOrders = (bzx, redis, redlock, queue, blockNumber, sender, loa
         }
         return bzx.getMarginLevels(loanOrderHash, trader);
       }).then(marginData => {
-        // logger.log("producer",  marginData);
-        console.log('DATA', marginData);
         const { initialMarginAmount, maintenanceMarginAmount, currentMarginAmount } = marginData;
 
         const isUnSafe = !BigNumber(currentMarginAmount).gt(maintenanceMarginAmount);
@@ -101,5 +103,6 @@ const processBlockLoans = async (bzx, redis, redlock, queue, sender) => {
 };
 
 module.exports = {
-  processBlockLoans
+  processBlockLoans,
+  publishLiquidationRequest
 };

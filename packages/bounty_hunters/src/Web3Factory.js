@@ -27,7 +27,7 @@ const getWeb3 = (network) => {
       }
       const infuraAuth = secrets.infura_apikey ? `${secrets.infura_apikey}/` : "";
       const privateKey = secrets.private_key[network];
-      provider = new PrivateKeyProvider(privateKey, `https://${network}.infura.io/v3/${infuraAuth}`);
+      provider = new PrivateKeyProvider(privateKey, `https://${network}.infura.io/${infuraAuth}`);
       providerWS = new Web3.providers.WebsocketProvider(`wss://${network}.infura.io/ws`);
       // provider = new PrivateKeyProvider(privateKey, `https://eth-${network}.alchemyapi.io/jsonrpc/${secrets.alchemy_apikey}`);
       // providerWS = new Web3.providers.WebsocketProvider(`wss://eth-${network}.ws.alchemyapi.io/ws/${secrets.alchemy_apikey}`);

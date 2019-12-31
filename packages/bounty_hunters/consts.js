@@ -19,7 +19,7 @@ const Consts = {
 
   // the number of seconds to wait between rechecking each loan
   // if trackBlocks = true, this is ignored
-  checkIntervalSecs: 10,
+  checkIntervalSecs: 23,
 
   // the number of seconds to wait between rechecking hashrate
   pingIntervalSecs: 30,

@@ -1,9 +1,10 @@
 const BigNumber = require("bignumber.js");
 
 const { Logger } = require("./LoggerFactory");
+const { publishLiquidationRequest } = require("./Producer");
 const consts = require("./../consts");
 
-const liquidateLoan = async (bzx, sender, loanOrderHash, trader, blockNumber) => {
+const liquidateLoan = async (bzx, sender, loanOrderHash, trader, blockNumber, redis, redlock, queue, amount, force) => {
   const logs = [];
   const errorLogs = [];
   const log = () => {
@@ -19,7 +20,7 @@ const liquidateLoan = async (bzx, sender, loanOrderHash, trader, blockNumber) =>
   try {
     const currentBlockNumber = await bzx.web3.eth.getBlockNumber();
     logs.push(`Current block number: ${currentBlockNumber}`);
-    if (blockNumber < (currentBlockNumber - consts.maxBlocksDelay)) {
+    if (blockNumber < (currentBlockNumber - consts.maxBlocksDelay) && !force) {
       logs.push(`Liquidation request is OLD!!! SKIPPING\n`);
       log();
       return;
@@ -36,16 +37,12 @@ const liquidateLoan = async (bzx, sender, loanOrderHash, trader, blockNumber) =>
     gasPrice: consts.defaultGasPrice // TODO @bshevchenko: should be dynamically calculated
   };
 
-  const liquidateAmount = (new BigNumber(0)).integerValue(); // TODO
-
-  const txObj = await bzx.liquidateLoan(loanOrderHash, trader, liquidateAmount, true);
+  const txObj = await bzx.liquidateLoan(loanOrderHash, trader, amount, true);
 
   try {
-    // const gasEstimate = await txObj.estimateGas(txOpts); TODO @bshevchenko: return
-
-    // logger.log(gasEstimate);
-    // txOpts.gas = Math.round(gasEstimate + gasEstimate * 0.1); TODO @bshevchenko: return
-    txOpts.gas = 10000000;
+    // const gasEstimate = await txObj.estimateGas(txOpts); // TODO @bshevchenko: may fail with "The execution failed due to an exception" which may mean anything
+    // txOpts.gas = Math.round(gasEstimate + gasEstimate * 0.2);
+    txOpts.gas = 10000000; // TODO @bshevchenko: comment
     const request = txObj.send(txOpts);
     request.once("transactionHash", hash => {
       logs.push(`Transaction submitted. Tx hash: ${hash}`);
@@ -54,13 +51,26 @@ const liquidateLoan = async (bzx, sender, loanOrderHash, trader, blockNumber) =>
     await request;
     logs.push(`Liquidation complete!\n`);
   } catch (error) {
-    errorLogs.push(`${error.message}\n`);
+    if (error.message.search('out of gas') >= 0 || error.message.search('execution failed due to an exception') >= 0) {
+      const idx = 0; // TODO
+      if (amount === 0) {
+        amount = (await bzx.getCloseAmount(loanOrderHash, trader));
+      }
+      const oldAmount = amount;
+      amount = (new BigNumber(amount)).div(2).integerValue(BigNumber.ROUND_CEIL);
+
+      logs.push(`OOG. Attempting to liquidate with a lower amount ${oldAmount} >> ${amount}`);
+      const request = { blockNumber, loanOrderHash, sender, trader, amount, force: true };
+      publishLiquidationRequest(0, redis, redlock, queue, request);
+    } else {
+      errorLogs.push(`${error.message}\n`);
+    }
   }
 
   log();
 };
 
-const processLiquidationQueue = async (bzx, redis, redlock, processorNumber, job, done) => {
+const processLiquidationQueue = async (bzx, redis, redlock, processorNumber, job, done, queue) => {
   Logger.log(
     "consumer-queue",
     `processing(${processorNumber}) prepare ${job.data.blockNumber.toString()}:${job.data.loanOrderHash}`
@@ -76,7 +86,18 @@ const processLiquidationQueue = async (bzx, redis, redlock, processorNumber, job
     `processing(${processorNumber}) start ${job.data.blockNumber.toString()}:${job.data.loanOrderHash}`
   );
 
-  await liquidateLoan(bzx, job.data.sender, job.data.loanOrderHash, job.data.trader, job.data.blockNumber);
+  await liquidateLoan(
+    bzx,
+    job.data.sender,
+    job.data.loanOrderHash,
+    job.data.trader,
+    job.data.blockNumber,
+    redis,
+    redlock,
+    queue,
+    job.data.amount || 0,
+    job.data.force || false
+  );
 
   Logger.log(
     "consumer-queue",

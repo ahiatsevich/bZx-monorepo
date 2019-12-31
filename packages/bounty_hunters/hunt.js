@@ -36,7 +36,9 @@ const startLiquidationProcessors = async (bzx, count) => {
   // eslint-disable-next-line no-plusplus
   for (let num = 1; num <= count; num++) {
     const liquidateQueue = new Queue("liquidate", consts.connectionString);
-    liquidateQueue.process(async (job, done) => processLiquidationQueue(bzx, redis, redlock, num, job, done));
+    liquidateQueue.process(
+      async (job, done) => processLiquidationQueue(bzx, redis, redlock, num, job, done, liquidateQueue)
+    );
   }
 };
 
@@ -46,19 +48,15 @@ const startLiquidationProcessors = async (bzx, count) => {
 
     Logger.log("info", `Connecting to network ${network}...`);
     const { web3, web3WS } = Web3Factory.getWeb3(network);
-    Logger.log("info", "Getting accounts...");
     const accounts = await web3.eth.getAccounts();
     if (!accounts) {
       process.exit();
     }
-    Logger.log("info", "Accounts received...");
     const sender = accounts[0];
     // sender = web3.eth.accounts.privateKeyToAccount(secrets["private_key"][network]).address;
 
     // const nonce = await web3.eth.getTransactionCount(sender);
     // logger.log("info", "nonce: "+nonce);
-
-    console.log('before');
 
     const bzx = await getBZX(web3);
 
