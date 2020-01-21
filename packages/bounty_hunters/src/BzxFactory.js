@@ -1,4 +1,5 @@
 const BigNumber = require("bignumber.js");
+const axios = require("axios");
 const { cleanData } = require("./Utils");
 
 const addresses = {
@@ -137,6 +138,12 @@ class BZx {
       maintenanceMarginAmount: data[1],
       currentMarginAmount: data[2]
     };
+  }
+
+  async getGasPrice() {
+    const { data: { fast } } = await axios.get('https://ethgasstation.info/json/ethgasAPI.json');
+    this.gasPrice = BigNumber(fast / 10).times(10 ** 9);
+    return this.gasPrice;
   }
 
   async getCloseAmount(loanOrderHash, trader) {
