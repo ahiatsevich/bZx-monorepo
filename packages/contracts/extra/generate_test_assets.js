@@ -42,17 +42,17 @@ function proceed() {
 
     LoanTokenLogic: "unknown",
     PositionTokenLogic: "unknown",
-    TokenizedRegistry: "unknown",
+    //TokenizedRegistry: "unknown",
   };
   var replacements = {
-    LoanTokenLogic: "LoanTokenLogicV2",
+    LoanTokenLogic: "LoanTokenLogicV4",
     PositionTokenLogic: "PositionTokenLogicV2"
   };
 
   var loanTokenization = new Array(
     "LoanTokenLogic",
     "PositionTokenLogic",
-    "TokenizedRegistry"
+    //"TokenizedRegistry"
   );
 
   var network = "development";
@@ -80,7 +80,7 @@ function proceed() {
   };
 
   if (network != "mainnet") {
-    if (network != "ropsten" && network != "kovan") {
+    if (network != "ropsten" && network != "kovan" && network != "rinkeby") {
       for (var i = 0; i <= 9; i++) {
         addresses["TestToken" + i] = "unknown";
       }

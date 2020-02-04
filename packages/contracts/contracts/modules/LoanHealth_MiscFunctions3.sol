@@ -1,5 +1,5 @@
 /**
- * Copyright 2017-2019, bZeroX, LLC. All Rights Reserved.
+ * Copyright 2017-2020, bZeroX, LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0.
  */
 
@@ -153,7 +153,11 @@ contract LoanHealth_MiscFunctions3 is BZxStorage, BZxProxiable, OrderClosingFunc
         uint256 marginAmountBeforeClose;
         uint256 collateralCloseAmount;
         uint256 updatedCloseAmount;
-        if (closeAmount < loanPosition.collateralTokenAmountFilled) {
+        if (closeAmount >= 10**28) {
+            // this will trigger closing the entire loan amount
+            collateralCloseAmount = loanPosition.collateralTokenAmountFilled;
+            updatedCloseAmount = MAX_UINT;
+        } else {
             marginAmountBeforeClose = _getCurrentMarginAmount(
                 loanOrder,
                 loanPosition,
@@ -193,10 +197,6 @@ contract LoanHealth_MiscFunctions3 is BZxStorage, BZxProxiable, OrderClosingFunc
                     updatedCloseAmount
                 );*/
             }
-        } else {
-            // this will trigger closing the entire loan amount
-            collateralCloseAmount = loanPosition.collateralTokenAmountFilled;
-            updatedCloseAmount = MAX_UINT;
         }
 
         (actualCloseAmount,,) = _closeLoanPartially(

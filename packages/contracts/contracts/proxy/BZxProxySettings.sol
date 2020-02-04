@@ -1,5 +1,5 @@
 /**
- * Copyright 2017-2019, bZeroX, LLC. All Rights Reserved.
+ * Copyright 2017-2020, bZeroX, LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0.
  */
 
@@ -33,7 +33,7 @@ contract BZxProxySettings is BZxStorage, BZxProxiable {
         targets[bytes4(keccak256("setBZxEther(address)"))] = _target;
         targets[bytes4(keccak256("setWeth(address)"))] = _target;
         targets[bytes4(keccak256("setVault(address)"))] = _target;
-        targets[bytes4(keccak256("setOracleRegistry(address)"))] = _target;
+        //targets[bytes4(keccak256("setOracleRegistry(address)"))] = _target;
         targets[bytes4(keccak256("setOracleReference(address,address)"))] = _target;
         targets[bytes4(keccak256("set0xExchangeWrapper(address)"))] = _target;
         targets[bytes4(keccak256("set0xV2ExchangeWrapper(address)"))] = _target;
@@ -154,14 +154,14 @@ contract BZxProxySettings is BZxStorage, BZxProxiable {
             vaultContract = _vault;
     }
 
-    function setOracleRegistry (
+    /*function setOracleRegistry (
         address _registry)
         public
         onlyOwner
     {
         if (_registry != address(0))
             oracleRegistryContract = _registry;
-    }
+    }*/
 
     function setOracleReference (
         address _oracle,

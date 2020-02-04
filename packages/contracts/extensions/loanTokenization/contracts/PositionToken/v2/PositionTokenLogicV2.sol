@@ -1,8 +1,8 @@
 /**
- * Copyright 2017-2019, bZeroX, LLC. All Rights Reserved.
+ * Copyright 2017-2020, bZeroX, LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0.
  */
- 
+
 pragma solidity 0.5.8;
 pragma experimental ABIEncoderV2;
 
@@ -72,6 +72,17 @@ interface IBZxOracle {
         external
         returns (uint256 destTokenAmountReceived, uint256 sourceTokenAmountUsed);
 
+    function setSaneRate(
+        address sourceTokenAddress,
+        address destTokenAddress)
+        external
+        returns (uint256 saneRate);
+
+    function clearSaneRate(
+        address sourceTokenAddress,
+        address destTokenAddress)
+        external;
+
     function getTradeData(
         address sourceTokenAddress,
         address destTokenAddress,
@@ -97,13 +108,42 @@ contract ILoanToken {
         address trader,
         address depositTokenAddress,
         address collateralTokenAddress,
-        address tradeTokenAddress)
+        address tradeTokenAddress,
+        bytes calldata loanDataBytes)
         external
+        payable
         returns (bytes32 loanOrderHash);
+}
+
+interface IWethHelper {
+    function claimEther(
+        address receiver,
+        uint256 amount)
+        external
+        returns (uint256 claimAmount);
 }
 
 contract PositionTokenLogicV2 is SplittableTokenV2 {
     using SafeMath for uint256;
+
+    address internal target_;
+
+    modifier fixedSaneRate
+    {
+        address currentOracle_ = IBZx(bZxContract).oracleAddresses(bZxOracle);
+
+        IBZxOracle(currentOracle_).setSaneRate(
+            loanTokenAddress,
+            tradeTokenAddress
+        );
+
+        _;
+
+        IBZxOracle(currentOracle_).clearSaneRate(
+            loanTokenAddress,
+            tradeTokenAddress
+        );
+    }
 
 
     function()
@@ -114,18 +154,83 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
 
     /* Public functions */
 
+    function mintWithEther(
+        address receiver,
+        uint256 maxPriceAllowed)
+        public
+        payable
+        returns (uint256)
+    {
+        return mintWithEther(
+            receiver,
+            maxPriceAllowed,
+            ""
+        );
+    }
+
+    function mintWithToken(
+        address receiver,
+        address depositTokenAddress,
+        uint256 depositAmount,
+        uint256 maxPriceAllowed)
+        public
+        returns (uint256)
+    {
+        return mintWithToken(
+            receiver,
+            depositTokenAddress,
+            depositAmount,
+            maxPriceAllowed,
+            ""
+        );
+    }
+
+    function burnToToken(
+        address receiver,
+        address burnTokenAddress,
+        uint256 burnAmount,
+        uint256 minPriceAllowed)
+        public
+        returns (uint256)
+    {
+        return burnToToken(
+            receiver,
+            burnTokenAddress,
+            burnAmount,
+            minPriceAllowed,
+            ""
+        );
+    }
+
+    function burnToEther(
+        address receiver,
+        uint256 burnAmount,
+        uint256 minPriceAllowed)
+        public
+        returns (uint256)
+    {
+        return burnToEther(
+            receiver,
+            burnAmount,
+            minPriceAllowed,
+            ""
+        );
+    }
+
     // returns the amount of token minted
     // maxPriceAllowed of 0 will be ignored
     function mintWithEther(
         address receiver,
-        uint256 maxPriceAllowed)
-        external
+        uint256 maxPriceAllowed,
+        bytes memory /*loanDataBytes*/)
+        public
         payable
         nonReentrant
+        fixedSaneRate
         returns (uint256)
     {
         require(!mintingPaused, "paused");
-        require (msg.value != 0, "msg.value == 0");
+        require (msg.value != 0, "no ether sent");
 
         uint256 netCollateralAmount;
         uint256 interestDepositRemaining;
@@ -152,15 +257,17 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
             );
         }
 
-        WETHInterface(wethContract).deposit.value(msg.value)();
+        address _wethContract = wethContract;
+        WETHInterface(_wethContract).deposit.value(msg.value)();
 
         return _mintWithToken(
             receiver,
-            wethContract,
+            _wethContract,
             msg.value,
             currentPrice,
             toCollateralRate,
-            toCollateralPrecision
+            toCollateralPrecision,
+            "" // loanDataBytes
         );
     }
 
@@ -170,21 +277,25 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
         address receiver,
         address depositTokenAddress,
         uint256 depositAmount,
-        uint256 maxPriceAllowed)
-        external
+        uint256 maxPriceAllowed,
+        bytes memory loanDataBytes)
+        public
+        payable
         nonReentrant
+        fixedSaneRate
         returns (uint256)
     {
+        uint256 mintAmount;
         require(!mintingPaused, "paused");
-        require (depositAmount != 0, "depositAmount == 0");
+        require(depositAmount != 0, "depositAmount == 0");
 
-        uint256 netCollateralAmount;
-        uint256 interestDepositRemaining;
+        uint256 value1; // netCollateralAmount
+        uint256 value2; // interestDepositRemaining
         uint256 toCollateralRate;
         uint256 toCollateralPrecision;
         if (totalSupply() != 0) {
-            (netCollateralAmount,
-             interestDepositRemaining,
+            (value1,
+             value2,
              ,
              toCollateralRate,
              toCollateralPrecision) = IBZx(bZxContract).getTotalEscrowWithRate(
@@ -194,7 +305,7 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
                 0
             );
         }
-        uint256 currentPrice = _tokenPrice(netCollateralAmount, interestDepositRemaining);
+        uint256 currentPrice = _tokenPrice(value1, value2);
 
         if (maxPriceAllowed != 0) {
             require(
@@ -203,48 +314,84 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
             );
         }
 
-        require(ERC20(depositTokenAddress).transferFrom(
-            msg.sender,
-            address(this),
-            depositAmount
-        ), "transfer of token failed");
+        if (msg.value != 0) {
+            value1 = address(this).balance.sub(msg.value); // beforeEtherBalance
+        }
 
-        return _mintWithToken(
+        if (depositTokenAddress == address(0)) {
+            require(msg.value >= depositAmount, "insufficient ether");
+            address _wethContract = wethContract;
+            WETHInterface(_wethContract).deposit.value(depositAmount)();
+            depositTokenAddress = _wethContract;
+        } else {
+            require(ERC20(depositTokenAddress).transferFrom(
+                msg.sender,
+                address(this),
+                depositAmount
+            ), "transfer of token failed");
+        }
+
+        mintAmount = _mintWithToken(
             receiver,
             depositTokenAddress,
             depositAmount,
             currentPrice,
             toCollateralRate,
-            toCollateralPrecision
+            toCollateralPrecision,
+            loanDataBytes
         );
+
+        if (msg.value != 0) {
+            value2 = address(this).balance; // finalEtherBalance
+            if (value2 > value1) {
+                (bool success,) = msg.sender.call.value(value2 - value1)("");
+                require(success, "eth refund failed");
+            }
+        }
+
+        return mintAmount;
     }
 
     function burnToEther(
-        address payable receiver,
+        address receiver,
         uint256 burnAmount,
-        uint256 minPriceAllowed)
-        external
+        uint256 minPriceAllowed,
+        bytes memory /*loanDataBytes*/)
+        public
+        //payable
         nonReentrant
+        fixedSaneRate
         returns (uint256)
     {
         require(!burningPaused, "paused");
         (uint256 tradeTokenAmountOwed, uint256 currentPrice) = _burnToken(
             burnAmount,
-            minPriceAllowed
+            minPriceAllowed,
+            "" //loanDataBytes
         );
         if (tradeTokenAmountOwed != 0) {
-            if (wethContract != tradeTokenAddress) {
+            address _wethContract = wethContract;
+            if (_wethContract != tradeTokenAddress) {
                 (uint256 destTokenAmountReceived,) = _tradeUserAsset(
                     tradeTokenAddress,      // sourceTokenAddress
                     address(0),             // destTokenAddress (address(0) == Ether)
                     receiver,               // receiver
-                    tradeTokenAmountOwed    // sourceTokenAmount
+                    tradeTokenAmountOwed,   // sourceTokenAmount
+                    true                    // throwOnError
                 );
 
                 tradeTokenAmountOwed = destTokenAmountReceived;
             } else {
-                WETHInterface(wethContract).withdraw(tradeTokenAmountOwed);
-                require(receiver.send(tradeTokenAmountOwed), "transfer of ETH failed");
+                IWethHelper wethHelper = IWethHelper(0x3b5bDCCDFA2a0a1911984F203C19628EeB6036e0);
+
+                bool success = ERC20(_wethContract).transfer(
+                    address(wethHelper),
+                    tradeTokenAmountOwed
+                );
+                if (success) {
+                    success = tradeTokenAmountOwed == wethHelper.claimEther(receiver, tradeTokenAmountOwed);
+                }
+                require(success, "transfer of ETH failed");
             }
         }
 
@@ -263,15 +410,19 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
         address receiver,
         address burnTokenAddress,
         uint256 burnAmount,
-        uint256 minPriceAllowed)
-        external
+        uint256 minPriceAllowed,
+        bytes memory /*loanDataBytes*/)
+        public
+        //payable
         nonReentrant
+        fixedSaneRate
         returns (uint256)
     {
         require(!burningPaused, "paused");
         (uint256 tradeTokenAmountOwed, uint256 currentPrice) = _burnToken(
             burnAmount,
-            minPriceAllowed
+            minPriceAllowed,
+            "" // loanDataBytes
         );
         if (tradeTokenAmountOwed != 0) {
             if (burnTokenAddress != tradeTokenAddress) {
@@ -279,7 +430,8 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
                     tradeTokenAddress,      // sourceTokenAddress
                     burnTokenAddress,       // destTokenAddress
                     receiver,               // receiver
-                    tradeTokenAmountOwed    // sourceTokenAmount
+                    tradeTokenAmountOwed,   // sourceTokenAmount
+                    true                    // throwOnError
                 );
 
                 tradeTokenAmountOwed = destTokenAmountReceived;
@@ -319,8 +471,9 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
             balance = address(this).balance;
             if (balance == 0)
                 return false;
-            WETHInterface(wethContract).deposit.value(balance)();
-            token = wethContract;
+            address _wethContract = wethContract;
+            WETHInterface(_wethContract).deposit.value(balance)();
+            token = _wethContract;
         } else {
             balance = ERC20(tokenAddress).balanceOf(address(this));
             if (balance == 0)
@@ -391,6 +544,64 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
 
         return true;
     }
+
+    // depositTokenAddress is swapped to tradeTokenAddress (collateral token) if needed in the protocol
+    // this is callable by anyone that wants to top up the collateral
+    function depositCollateralToLoan(
+        address depositTokenAddress,
+        uint256 depositAmount)
+        external
+        nonReentrant
+    {
+        require(ERC20(depositTokenAddress).transferFrom(
+            msg.sender,
+            address(this),
+            depositAmount
+        ), "transfer of token failed");
+
+        uint256 tempAllowance = ERC20(depositTokenAddress).allowance(address(this), bZxVault);
+        if (tempAllowance < depositAmount) {
+            if (tempAllowance != 0) {
+                // reset approval to 0
+                require(ERC20(depositTokenAddress).approve(bZxVault, 0), "token approval reset failed");
+            }
+
+            require(ERC20(depositTokenAddress).approve(bZxVault, MAX_UINT), "token approval failed");
+        }
+
+        require(IBZx(bZxContract).depositCollateral(
+            loanOrderHash,
+            depositTokenAddress,
+            depositAmount
+        ), "deposit failed");
+    }
+
+    function triggerPosition(
+        address depositTokenAddress,
+        uint256 depositAmount,
+        uint256 rebalanceAmount,
+        bytes memory loanDataBytes)
+        public
+        payable
+    {
+        if (depositTokenAddress == address(0)) {
+            depositTokenAddress = tradeTokenAddress;
+        }
+
+        if (rebalanceAmount != 0 && msg.sender == owner) {
+            IBZx(bZxContract).withdrawCollateral(
+                loanOrderHash,
+                rebalanceAmount
+            );
+        }
+
+        _triggerPosition(
+            depositTokenAddress,
+            depositAmount,
+            loanDataBytes
+    	);
+    }
+
 
     /* Public View functions */
 
@@ -571,30 +782,25 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
         uint256 depositAmount,
         uint256 currentPrice,
         uint256 toCollateralRate,
-        uint256 toCollateralPrecision)
+        uint256 toCollateralPrecision,
+        bytes memory loanDataBytes)
         internal
         returns (uint256)
     {
-        uint256 refundAmount;
         if (depositTokenAddress != tradeTokenAddress && depositTokenAddress != loanTokenAddress) {
             (uint256 destTokenAmountReceived, uint256 depositAmountUsed) = _tradeUserAsset(
                 depositTokenAddress,    // sourceTokenAddress
                 tradeTokenAddress,      // destTokenAddress
                 address(this),          // receiver
-                depositAmount           // sourceTokenAmount
+                depositAmount,          // sourceTokenAmount
+                true                    // throwOnError
             );
 
             if (depositAmount > depositAmountUsed) {
-                refundAmount = depositAmount-depositAmountUsed;
-                if (msg.value == 0) {
-                    require(ERC20(depositTokenAddress).transfer(
-                        msg.sender,
-                        refundAmount
-                    ), "transfer of token failed");
-                } else {
-                    WETHInterface(wethContract).withdraw(refundAmount);
-                    require(msg.sender.send(refundAmount), "transfer of ETH failed");
-                }
+                require(ERC20(depositTokenAddress).transfer(
+                    msg.sender,
+                    depositAmount-depositAmountUsed
+                ), "transfer of token failed");
             }
 
             depositAmount = destTokenAmountReceived;
@@ -612,7 +818,8 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
         // open position
         _triggerPosition(
             depositTokenAddress,
-            depositAmount
+            depositAmount,
+            loanDataBytes
         );
 
         // get post-entry supply
@@ -650,7 +857,8 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
 
     function _burnToken(
         uint256 burnAmount,
-        uint256 minPriceAllowed)
+        uint256 minPriceAllowed,
+        bytes memory /*loanDataBytes*/)
         internal
         returns (uint256 tradeTokenAmountOwed, uint256 currentPrice)
     {
@@ -739,6 +947,9 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
                     require(tradeTokenAmountOwed > slippageLoss, "slippage too great");
                     tradeTokenAmountOwed = tradeTokenAmountOwed - slippageLoss;
                 }
+            } else {
+                netCollateralAmount = 0;
+                interestDepositRemaining = 0;
             }
 
             if (tradeTokenAmountOwed > tradeTokenAmountAvailableInContract) {
@@ -772,7 +983,7 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
             burnAmount
         );
 
-        if (totalSupply() == 0 || tokenPrice() == 0) {
+        if (totalSupply() == 0 || _tokenPrice(netCollateralAmount, interestDepositRemaining) == 0) {
             splitFactor = 10**18;
             currentPrice = initialPrice;
         }
@@ -788,7 +999,8 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
         address sourceTokenAddress,
         address destTokenAddress,
         address receiver,
-        uint256 sourceTokenAmount)
+        uint256 sourceTokenAmount,
+        bool throwOnError)
         internal
         returns (uint256 destTokenAmountReceived, uint256 sourceTokenAmountUsed)
     {
@@ -804,121 +1016,77 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
             require(ERC20(sourceTokenAddress).approve(oracleAddress, MAX_UINT), "token approval failed");
         }
 
-        (destTokenAmountReceived, sourceTokenAmountUsed) = IBZxOracle(oracleAddress).tradeUserAsset(
-            sourceTokenAddress,
-            destTokenAddress,
-            receiver, // receiverAddress
-            receiver, // returnToSenderAddress
-            sourceTokenAmount,
-            MAX_UINT, // maxDestTokenAmount
-            0 // minConversionRate
+        (bool success, bytes memory data) = oracleAddress.call(
+            abi.encodeWithSignature(
+                "tradeUserAsset(address,address,address,address,uint256,uint256,uint256)",
+                sourceTokenAddress,
+                destTokenAddress,
+                receiver, // receiverAddress
+                receiver, // returnToSenderAddress
+                sourceTokenAmount,
+                MAX_UINT, // maxDestTokenAmount
+                0 // minConversionRate
+            )
         );
+        require(!throwOnError || success, "trade error");
+        assembly {
+            if eq(success, 1) {
+                destTokenAmountReceived := mload(add(data, 32))
+                sourceTokenAmountUsed := mload(add(data, 64))
+            }
+        }
     }
 
     function _triggerPosition(
         address depositTokenAddress,
-        uint256 depositAmount)
+        uint256 depositAmount,
+        bytes memory loanDataBytes)
         internal
-        returns (bool)
     {
-        if (tradeTokenAddress == wethContract || loanTokenAddress == wethContract || depositAmount == 0 || depositAmount == MAX_UINT) {
-            uint256 ethBalance = address(this).balance;
-            if (ethBalance != 0) {
-                WETHInterface(wethContract).deposit.value(ethBalance)();
-                if (tradeTokenAddress != wethContract && loanTokenAddress != wethContract) {
-                    _tradeUserAsset(
-                        wethContract,       // sourceTokenAddress
-                        tradeTokenAddress,  // destTokenAddress
-                        address(this),      // receiver
-                        ethBalance          // sourceTokenAmount
-                    );
+        uint256 tradeTokenDeposit = ERC20(tradeTokenAddress).balanceOf(address(this));
+        uint256 loanTokenDeposit = ERC20(loanTokenAddress).balanceOf(address(this));
+
+        if (loanTokenDeposit != 0 || tradeTokenDeposit != 0) {
+            if (depositTokenAddress == tradeTokenAddress) {
+                if (depositAmount == 0 || depositAmount > tradeTokenDeposit) {
+                    loanTokenDeposit = loanTokenDeposit;
+                    depositAmount = tradeTokenDeposit;
+                } else {
+                    loanTokenDeposit = 0;
+                    tradeTokenDeposit = depositAmount;
+                }
+            } else if (depositTokenAddress == loanTokenAddress) {
+                if (depositAmount == 0 || depositAmount > loanTokenDeposit) {
+                    tradeTokenDeposit = tradeTokenDeposit;
+                    depositAmount = loanTokenDeposit;
+                } else {
+                    loanTokenDeposit = depositAmount;
+                    tradeTokenDeposit = 0;
+                }
+            } else {
+                revert("invalid deposit");
+            }
+
+            uint256 msgValue;
+            if (msg.value != 0) {
+                msgValue = address(this).balance;
+                if (msgValue > msg.value) {
+                    msgValue = msg.value;
                 }
             }
+            ILoanToken(loanTokenLender).marginTradeFromDeposit.value(msgValue)(
+                depositAmount,          // depositAmount
+                leverageAmount,         // leverageAmount
+                loanTokenDeposit,       // loanTokenSent
+                tradeTokenDeposit,      // collateralTokenSent
+                0,                      // tradeTokenSent
+                address(this),          // trader
+                depositTokenAddress,    // depositTokenAddress
+                tradeTokenAddress,      // collateralTokenAddress
+                tradeTokenAddress,      // tradeTokenAddress
+                loanDataBytes           // loanDataBytes
+            );
         }
-
-        uint256 tradeTokenBalance = ERC20(tradeTokenAddress).balanceOf(address(this));
-        uint256 loanTokenBalance = ERC20(loanTokenAddress).balanceOf(address(this));
-
-        if (depositAmount == 0) {
-            if (loanTokenBalance != 0) {
-                (uint256 destTokenAmountReceived,) = _tradeUserAsset(
-                    loanTokenAddress,   // sourceTokenAddress
-                    tradeTokenAddress,  // destTokenAddress
-                    address(this),      // receiver
-                    loanTokenBalance    // sourceTokenAmount
-                );
-                tradeTokenBalance = tradeTokenBalance
-                    .add(destTokenAmountReceived);
-            }
-
-            if (tradeTokenBalance != 0) {
-                uint256 tempAllowance = ERC20(tradeTokenAddress).allowance(address(this), bZxVault);
-                if (tempAllowance < tradeTokenBalance) {
-                    if (tempAllowance != 0) {
-                        // reset approval to 0
-                        require(ERC20(tradeTokenAddress).approve(bZxVault, 0), "token approval reset failed");
-                    }
-
-                    require(ERC20(tradeTokenAddress).approve(bZxVault, MAX_UINT), "token approval failed");
-                }
-
-                return IBZx(bZxContract).depositCollateral(
-                    loanOrderHash,
-                    tradeTokenAddress,
-                    tradeTokenBalance
-                );
-            }
-        } else {
-            if (tradeTokenBalance != 0) {
-                uint256 tempAllowance = ERC20(tradeTokenAddress).allowance(address(this), loanTokenLender);
-                if (tempAllowance < tradeTokenBalance) {
-                    if (tempAllowance != 0) {
-                        // reset approval to 0
-                        require(ERC20(tradeTokenAddress).approve(loanTokenLender, 0), "token approval reset failed");
-                    }
-
-                    require(ERC20(tradeTokenAddress).approve(loanTokenLender, MAX_UINT), "token approval failed");
-                }
-
-                if (depositAmount == MAX_UINT) {
-                    depositAmount = tradeTokenBalance;
-                    depositTokenAddress = tradeTokenAddress;
-                }
-            }
-            if (loanTokenBalance != 0) {
-                uint256 tempAllowance = ERC20(loanTokenAddress).allowance(address(this), loanTokenLender);
-                if (tempAllowance < loanTokenBalance) {
-                    if (tempAllowance != 0) {
-                        // reset approval to 0
-                        require(ERC20(loanTokenAddress).approve(loanTokenLender, 0), "token approval reset failed");
-                    }
-
-                    require(ERC20(loanTokenAddress).approve(loanTokenLender, MAX_UINT), "token approval failed");
-                }
-
-                if (depositAmount == MAX_UINT) {
-                    depositAmount = loanTokenBalance;
-                    depositTokenAddress = loanTokenAddress;
-                }
-            }
-
-            if (loanTokenBalance != 0 || tradeTokenBalance != 0) {
-                ILoanToken(loanTokenLender).marginTradeFromDeposit(
-                    depositAmount,          // depositAmount
-                    leverageAmount,         // leverageAmount
-                    loanTokenBalance,       // loanTokenSent
-                    tradeTokenBalance,      // collateralTokenSent
-                    0,                      // tradeTokenSent
-                    address(this),          // trader
-                    depositTokenAddress,    // depositTokenAddress
-                    tradeTokenAddress,      // collateralTokenAddress
-                    tradeTokenAddress       // tradeTokenAddress
-                );
-                return true;
-            }
-        }
-
-        return false;
     }
 
 
@@ -944,56 +1112,6 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
 
     /* Owner-Only functions */
 
-    function setLoanTokenLender(
-        address _lender)
-        public
-        onlyOwner
-    {
-        loanTokenLender = _lender;
-    }
-
-    function setBZxContract(
-        address _addr)
-        public
-        onlyOwner
-    {
-        bZxContract = _addr;
-    }
-
-    function setBZxVault(
-        address _addr)
-        public
-        onlyOwner
-    {
-        bZxVault = _addr;
-    }
-
-    function setBZxOracle(
-        address _addr)
-        public
-        onlyOwner
-    {
-        bZxOracle = _addr;
-    }
-
-    function setInitialPrice(
-        uint256 _value)
-        public
-        onlyOwner
-    {
-        require(_value != 0, "value can't be 0");
-        initialPrice = _value;
-    }
-
-    function setSplitValue(
-        uint256 _value)
-        public
-        onlyOwner
-    {
-        require(_value != 0, "value can't be 0");
-        splitFactor = _value;
-    }
-
     function handleSplit()
         public
         onlyOwner
@@ -1009,104 +1127,42 @@ contract PositionTokenLogicV2 is SplittableTokenV2 {
         }
     }
 
-    // depositTokenAddress is swapped to tradeTokenAddress (collateral token) if needed in the protocol
-    // this is callable by anyone that wants to top up the collateral
-    function depositCollateralToLoan(
-        address depositTokenAddress,
-        uint256 depositAmount)
-        external
-        nonReentrant
+    function updateSettings(
+        address settingsTarget,
+        bytes memory callData)
+        public
     {
-        require(ERC20(depositTokenAddress).transferFrom(
-            msg.sender,
-            address(this),
-            depositAmount
-        ), "transfer of token failed");
+        if (msg.sender != owner) {
+            address _lowerAdmin;
+            address _lowerAdminContract;
 
-        uint256 tempAllowance = ERC20(depositTokenAddress).allowance(address(this), bZxVault);
-        if (tempAllowance < depositAmount) {
-            if (tempAllowance != 0) {
-                // reset approval to 0
-                require(ERC20(depositTokenAddress).approve(bZxVault, 0), "token approval reset failed");
+            //keccak256("pToken_LowerAdminAddress")
+            //keccak256("pToken_LowerAdminContract")
+            assembly {
+                _lowerAdmin := sload(0x4d9d6037d7e53fa4549f7e532571af3aa103c886a59baf156ebf80c2b3b99b6e)
+                _lowerAdminContract := sload(0x544cf74df6879599b75c5fbe7afeb236fc89a80fffaa97fdb08f1e24886a2491)
             }
-
-            require(ERC20(depositTokenAddress).approve(bZxVault, MAX_UINT), "token approval failed");
+            require(msg.sender == _lowerAdmin && settingsTarget == _lowerAdminContract);
         }
 
-        require(IBZx(bZxContract).depositCollateral(
-            loanOrderHash,
-            depositTokenAddress,
-            depositAmount
-        ), "deposit failed");
-    }
+        address currentTarget = target_;
+        target_ = settingsTarget;
 
-    function triggerPosition(
-        bool openPosition)
-        public
-    {
-        require(totalSupply_ != 0, "no supply");
-        if (openPosition) {
-            _triggerPosition(address(0), MAX_UINT);
-        } else {
-            _triggerPosition(address(0), 0);
+        (bool result,) = address(this).call(callData);
+
+        uint256 size;
+        uint256 ptr;
+        assembly {
+            size := returndatasize
+            ptr := mload(0x40)
+            returndatacopy(ptr, 0, size)
+            if eq(result, 0) { revert(ptr, size) }
         }
-    }
 
-    function initialize(
-        address[7] memory addresses,
-        bool _shortPosition,
-        uint256 _leverageAmount,
-        bytes32 _loanOrderHash,
-        string memory _name,
-        string memory _symbol)
-        public
-        onlyOwner
-    {
-        require (!isInitialized_, "already initialized");
+        target_ = currentTarget;
 
-        bZxContract = addresses[0];
-        bZxVault = addresses[1];
-        bZxOracle = addresses[2];
-        wethContract = addresses[3];
-        loanTokenAddress = addresses[4];
-        tradeTokenAddress = addresses[5];
-        loanTokenLender = addresses[6];
-
-        shortPosition = _shortPosition;
-
-        loanOrderHash = _loanOrderHash;
-        leverageAmount = _leverageAmount;
-
-        name = _name;
-        symbol = _symbol;
-        decimals = 18;
-
-        loanTokenDecimals = uint256(EIP20(loanTokenAddress).decimals());
-        // 10**18 * 10**(18-decimals_of_loan_token)
-        loanTokenAdjustment = SafeMath.mul(
-            10**18,
-            10**(
-                SafeMath.sub(
-                    18,
-                    loanTokenDecimals
-                )
-            )
-        );
-
-        tradeTokenDecimals = uint256(EIP20(tradeTokenAddress).decimals());
-        // 10**18 * 10**(18-decimals_of_trade_token)
-        tradeTokenAdjustment = SafeMath.mul(
-            10**18,
-            10**(
-                SafeMath.sub(
-                    18,
-                    tradeTokenDecimals
-                )
-            )
-        );
-
-        initialPrice = 10**21; // starting price of 1,000
-
-        isInitialized_ = true;
+        assembly {
+            return(ptr, size)
+        }
     }
 }

@@ -1,5 +1,5 @@
 /**
- * Copyright 2017-2019, bZeroX, LLC. All Rights Reserved.
+ * Copyright 2017-2020, bZeroX, LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0.
  */
 
@@ -55,7 +55,7 @@ contract LoanMaintenance_MiscFunctions2 is BZxStorage, BZxProxiable, MiscFunctio
             // user can't transfer ownership to another trader or lender already in this order
             revert("BZxLoanMaintenance::changeTraderOwnership: new owner is invalid");
         }
-        
+
         LoanOrder memory loanOrder = orders[loanOrderHash];
         if (loanOrder.loanTokenAddress == address(0)) {
             revert("BZxLoanMaintenance::changeTraderOwnership: loanOrder.loanTokenAddress == address(0)");

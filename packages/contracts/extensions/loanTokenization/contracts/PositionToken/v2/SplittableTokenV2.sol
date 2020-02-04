@@ -1,8 +1,8 @@
 /**
- * Copyright 2017-2019, bZeroX, LLC. All Rights Reserved.
+ * Copyright 2017-2020, bZeroX, LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0.
  */
- 
+
 pragma solidity 0.5.8;
 
 import "./SplittableTokenStorageV2.sol";
@@ -30,7 +30,7 @@ contract SplittableTokenV2 is SplittableTokenStorageV2 {
         }
 
         balances[_to] = normalize(denormalize(balances[_to]).add(_value));
-        if (allowanceAmount < MAX_UINT) {
+        if (allowanceAmount != MAX_UINT) {
             allowed[_from][msg.sender] = normalize(allowanceAmount.sub(_value));
             if (allowance(_from, msg.sender) == 0) {
                 allowed[_from][msg.sender] = 0;
@@ -67,41 +67,11 @@ contract SplittableTokenV2 is SplittableTokenStorageV2 {
         returns (bool)
     {
         allowed[msg.sender][_spender] = _value;
-        if (allowance(msg.sender, _spender) == 0) {
+        if (_value != MAX_UINT && allowance(msg.sender, _spender) == 0) {
             allowed[msg.sender][_spender] = 0;
         }
 
         emit Approval(msg.sender, _spender, _value);
-        return true;
-    }
-
-    function increaseApproval(
-        address _spender,
-        uint256 _addedValue)
-        public
-        returns (bool)
-    {
-        allowed[msg.sender][_spender] = normalize(denormalize(allowed[msg.sender][_spender]).add(_addedValue));
-        emit Approval(msg.sender, _spender, denormalize(allowed[msg.sender][_spender]));
-        return true;
-    }
-
-    function decreaseApproval(
-        address _spender,
-        uint256 _subtractedValue)
-        public
-        returns (bool)
-    {
-        uint256 oldValue = denormalize(allowed[msg.sender][_spender]);
-        if (_subtractedValue >= oldValue) {
-            allowed[msg.sender][_spender] = 0;
-        } else {
-            allowed[msg.sender][_spender] = normalize(oldValue.sub(_subtractedValue));
-            if (allowance(msg.sender, _spender) == 0) {
-                allowed[msg.sender][_spender] = 0;
-            }
-        }
-        emit Approval(msg.sender, _spender, denormalize(allowed[msg.sender][_spender]));
         return true;
     }
 
