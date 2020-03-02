@@ -103,7 +103,7 @@ contract LoanTokenLogicV4 is AdvancedToken, OracleNotifierInterface {
 
     address internal target_;
 
-    address internal constant arbitraryCaller = 0x4c67b3dB1d4474c0EBb2DB8BeC4e345526d9E2fd;
+    address internal constant arbitraryCaller = 0x000F400e6818158D541C3EBE45FE3AA0d47372FF;
 
     modifier onlyOracle() {
         require(msg.sender == IBZx(bZxContract).oracleAddresses(bZxOracle), "1");
@@ -160,14 +160,8 @@ contract LoanTokenLogicV4 is AdvancedToken, OracleNotifierInterface {
         if (loanAmountPaid != 0) {
             IWethHelper wethHelper = IWethHelper(0x3b5bDCCDFA2a0a1911984F203C19628EeB6036e0);
 
-            bool success = ERC20(loanTokenAddress).transfer(
-                address(wethHelper),
-                loanAmountPaid
-            );
-            if (success) {
-                success = loanAmountPaid == wethHelper.claimEther(receiver, loanAmountPaid);
-            }
-            require(success, "4");
+            _transfer(loanTokenAddress, address(wethHelper), loanAmountPaid, "4");
+            require(loanAmountPaid == wethHelper.claimEther(receiver, loanAmountPaid), "4");
         }
     }
 
@@ -183,10 +177,7 @@ contract LoanTokenLogicV4 is AdvancedToken, OracleNotifierInterface {
         );
 
         if (loanAmountPaid != 0) {
-            require(ERC20(loanTokenAddress).transfer(
-                receiver,
-                loanAmountPaid
-            ), "5");
+            _transfer(loanTokenAddress, receiver, loanAmountPaid, "5");
         }
     }
 
@@ -202,6 +193,7 @@ contract LoanTokenLogicV4 is AdvancedToken, OracleNotifierInterface {
         returns (bytes memory)
     {
         _checkPause();
+
         _settleInterest();
 
         uint256 beforeEtherBalance = address(this).balance.sub(msg.value);
@@ -210,10 +202,7 @@ contract LoanTokenLogicV4 is AdvancedToken, OracleNotifierInterface {
         require(beforeAssetsBalance != 0, "38");
 
         if (borrowAmount != 0) {
-            require(ERC20(loanTokenAddress).transfer(
-                borrower,
-                borrowAmount
-            ), "39");
+            _transfer(loanTokenAddress, borrower, borrowAmount, "39");
         }
 
         bytes memory callData;
@@ -227,8 +216,7 @@ contract LoanTokenLogicV4 is AdvancedToken, OracleNotifierInterface {
 
         (bool success, bytes memory returnData) = arbitraryCaller.call.value(msg.value)(
             abi.encodeWithSelector(
-                0xba25d2ff, // sendCall(address,address,bytes)
-                msg.sender,
+                0xde064e0d, // sendCall(address,bytes)
                 target,
                 callData
             )
@@ -349,7 +337,7 @@ contract LoanTokenLogicV4 is AdvancedToken, OracleNotifierInterface {
     //    If the borrower wished to instead withdraw the borrowed token to their wallet, set this to address(0)
     //    If set to address(0), initial collateral required will equal initial margin percent + 100%
     // returns loanOrderHash for the base protocol loan
-    function borrowTokenAndUse(
+    /*function borrowTokenAndUse(
         uint256 borrowAmount,
         uint256 leverageAmount,
         uint256 interestInitialAmount,
@@ -360,7 +348,7 @@ contract LoanTokenLogicV4 is AdvancedToken, OracleNotifierInterface {
         address receiver,
         address collateralTokenAddress,
         address tradeTokenAddress,
-        bytes memory /*loanDataBytes*/)
+        bytes memory *//*loanDataBytes*//*)
         public
         //payable
         returns (bytes32 loanOrderHash)
@@ -393,7 +381,7 @@ contract LoanTokenLogicV4 is AdvancedToken, OracleNotifierInterface {
             false,  // amountIsADeposit
             ""      // loanDataBytes
         );
-    }
+    }*/
 
     // Called by pTokens to borrow and immediately get into a positions
     // Other traders can call this, but it's recommended to instead use borrowTokenAndUse(...) instead
@@ -781,11 +769,7 @@ contract LoanTokenLogicV4 is AdvancedToken, OracleNotifierInterface {
         mintAmount = depositAmount.mul(10**18).div(currentPrice);
 
         if (msg.value == 0) {
-            require(ERC20(loanTokenAddress).transferFrom(
-                msg.sender,
-                address(this),
-                depositAmount
-            ), "18");
+            _transferFrom(loanTokenAddress, msg.sender, address(this), depositAmount, "18");
         } else {
             WETHInterface(wethContract).deposit.value(depositAmount)();
         }
@@ -998,6 +982,8 @@ contract LoanTokenLogicV4 is AdvancedToken, OracleNotifierInterface {
         internal
         returns (uint256)
     {
+        _checkPause();
+
         require (sentAmounts[1] <= ERC20(loanTokenAddress).balanceOf(address(this)) && // borrowAmount
             sentAddresses[0] != address(0), // borrower
             "24"
@@ -1081,81 +1067,84 @@ contract LoanTokenLogicV4 is AdvancedToken, OracleNotifierInterface {
             if (loanTokenAddress == wethContract) {
                 IWethHelper wethHelper = IWethHelper(0x3b5bDCCDFA2a0a1911984F203C19628EeB6036e0);
 
-                success = ERC20(loanTokenAddress).transfer(
-                    address(wethHelper),
-                    withdrawalAmount
-                );
-                if (success) {
-                    success = withdrawalAmount == wethHelper.claimEther(receiver, withdrawalAmount);
-                }
+                _transfer(loanTokenAddress, address(wethHelper), withdrawalAmount, "");
+                success = withdrawalAmount == wethHelper.claimEther(receiver, withdrawalAmount);
             } else {
-                success = ERC20(loanTokenAddress).transfer(
-                    receiver,
-                    withdrawalAmount
-                );
+                _transfer(loanTokenAddress, receiver, withdrawalAmount, "");
+                success = true;
             }
 
             if (success && borrowAmount > withdrawalAmount) {
-                success = ERC20(loanTokenAddress).transfer(
-                    bZxVault,
-                    borrowAmount - withdrawalAmount
-                );
+                _transfer(loanTokenAddress, bZxVault, borrowAmount - withdrawalAmount, "");
             }
+            require(success, "26");
         } else {
-            success = ERC20(loanTokenAddress).transfer(
-                bZxVault,
-                borrowAmount
-            );
+            _transfer(loanTokenAddress, bZxVault, borrowAmount, "26");
         }
-        require(success, "26");
 
-        success = false;
         if (collateralTokenSent != 0) {
             if (collateralTokenAddress == wethContract && msg.value != 0 && collateralTokenSent == msg.value) {
                 WETHInterface(wethContract).deposit.value(collateralTokenSent)();
-                success = ERC20(collateralTokenAddress).transfer(
-                    bZxVault,
-                    collateralTokenSent
-                );
+                _transfer(collateralTokenAddress, bZxVault, collateralTokenSent, "27");
             } else {
                 if (collateralTokenAddress == loanTokenAddress) {
                     loanTokenSent = loanTokenSent.add(collateralTokenSent);
-                    success = true;
                 } else if (collateralTokenAddress == tradeTokenAddress) {
                     tradeTokenSent = tradeTokenSent.add(collateralTokenSent);
-                    success = true;
                 } else {
-                    success = ERC20(collateralTokenAddress).transferFrom(
-                        msg.sender,
-                        bZxVault,
-                        collateralTokenSent
-                    );
+                    _transferFrom(collateralTokenAddress, msg.sender, bZxVault, collateralTokenSent, "27");
                 }
             }
-            require(success, "27");
         }
 
         if (loanTokenSent != 0) {
             if (loanTokenAddress == tradeTokenAddress) {
                 tradeTokenSent = tradeTokenSent.add(loanTokenSent);
             } else {
-                require(ERC20(loanTokenAddress).transferFrom(
-                    msg.sender,
-                    bZxVault,
-                    loanTokenSent
-                ), "31");
+                _transferFrom(loanTokenAddress, msg.sender, bZxVault, loanTokenSent, "31");
             }
         }
 
         if (tradeTokenSent != 0) {
-            require(ERC20(tradeTokenAddress).transferFrom(
-                msg.sender,
-                bZxVault,
-                tradeTokenSent
-            ), "32");
+            _transferFrom(tradeTokenAddress, msg.sender, bZxVault, tradeTokenSent, "32");
         }
     }
 
+    function _transfer(
+        address token,
+        address to,
+        uint256 amount,
+        string memory errorMsg)
+        internal
+    {
+        (bool success,) = token.call(
+            abi.encodeWithSelector(
+                0xa9059cbb, // transfer(address,uint256)
+                to,
+                amount
+            )
+        );
+        require(success, errorMsg);
+    }
+
+    function _transferFrom(
+        address token,
+        address from,
+        address to,
+        uint256 amount,
+        string memory errorMsg)
+        internal
+    {
+        (bool success,) = token.call(
+            abi.encodeWithSelector(
+                0x23b872dd, // transferFrom(address,address,uint256)
+                from,
+                to,
+                amount
+            )
+        );
+        require(success, errorMsg);
+    }
 
     /* Internal View functions */
 
@@ -1199,7 +1188,8 @@ contract LoanTokenLogicV4 is AdvancedToken, OracleNotifierInterface {
         if (assetBorrow != 0 && assetSupply >= assetBorrow) {
             return _protocolInterestRate(assetBorrow)
                 .mul(_utilizationRate(assetBorrow, assetSupply))
-                .div(10**20);
+                .mul(spreadMultiplier)
+                .div(10**40);
         }
     }
 

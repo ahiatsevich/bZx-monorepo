@@ -139,7 +139,7 @@ contract LoanTokenLogicV4_Chai is AdvancedToken, OracleNotifierInterface {
 
     uint256 constant RAY = 10 ** 27;
 
-    address internal constant arbitraryCaller = 0x4c67b3dB1d4474c0EBb2DB8BeC4e345526d9E2fd;
+    address internal constant arbitraryCaller = 0x000F400e6818158D541C3EBE45FE3AA0d47372FF;
 
     // Mainnet
     iChai public constant chai = iChai(0x06AF07097C9Eeb7fD685c692751D5C66dB49c215);
@@ -231,6 +231,8 @@ contract LoanTokenLogicV4_Chai is AdvancedToken, OracleNotifierInterface {
         nonReentrant
         returns (bytes memory)
     {
+        _checkPause();
+
         _settleInterest();
 
         ERC20 _dai;
@@ -261,8 +263,7 @@ contract LoanTokenLogicV4_Chai is AdvancedToken, OracleNotifierInterface {
 
         (bool success, bytes memory returnData) = arbitraryCaller.call.value(msg.value)(
             abi.encodeWithSelector(
-                0xba25d2ff, // sendCall(address,address,bytes)
-                msg.sender,
+                0xde064e0d, // sendCall(address,bytes)
                 target,
                 callData
             )
@@ -274,7 +275,9 @@ contract LoanTokenLogicV4_Chai is AdvancedToken, OracleNotifierInterface {
         require(
             address(this).balance >= beforeEtherBalance &&
             _underlyingBalance()
-                .add(totalAssetBorrow) >= beforeAssetsBalance,
+                .add(totalAssetBorrow)
+                .add(1) // account for rounding error
+                >= beforeAssetsBalance,
             "40"
         );
 
@@ -387,7 +390,7 @@ contract LoanTokenLogicV4_Chai is AdvancedToken, OracleNotifierInterface {
     //    If the borrower wished to instead withdraw the borrowed token to their wallet, set this to address(0)
     //    If set to address(0), initial collateral required will equal initial margin percent + 100%
     // returns loanOrderHash for the base protocol loan
-    function borrowTokenAndUse(
+    /*function borrowTokenAndUse(
         uint256 borrowAmount,
         uint256 leverageAmount,
         uint256 interestInitialAmount,
@@ -398,7 +401,7 @@ contract LoanTokenLogicV4_Chai is AdvancedToken, OracleNotifierInterface {
         address receiver,
         address collateralTokenAddress,
         address tradeTokenAddress,
-        bytes memory /*loanDataBytes*/)
+        bytes memory *//*loanDataBytes*//*)
         public
         //payable
         returns (bytes32 loanOrderHash)
@@ -431,7 +434,7 @@ contract LoanTokenLogicV4_Chai is AdvancedToken, OracleNotifierInterface {
             false, // amountIsADeposit
             ""      // loanDataBytes
         );
-    }
+    }*/
 
     // Called by pTokens to borrow and immediately get into a positions
     // Other traders can call this, but it's recommended to instead use borrowTokenAndUse(...) instead
@@ -828,12 +831,12 @@ contract LoanTokenLogicV4_Chai is AdvancedToken, OracleNotifierInterface {
     }
 
     // can safely be called by anyone at anytime
-    function setupChai()
+    /*function setupChai()
         public
     {
         _getDai().approve(address(_getChai()), MAX_UINT);
         _dsrDeposit();
-    }
+    }*/
 
 
     /* Internal functions */
@@ -1117,6 +1120,8 @@ contract LoanTokenLogicV4_Chai is AdvancedToken, OracleNotifierInterface {
         internal
         returns (uint256)
     {
+        _checkPause();
+
         require (sentAmounts[1] <= _underlyingBalance() && // borrowAmount
             sentAddresses[0] != address(0), // borrower
             "24"
@@ -1376,8 +1381,12 @@ contract LoanTokenLogicV4_Chai is AdvancedToken, OracleNotifierInterface {
                     assetSupply
                 );
             }
-            return _protocolInterestRate(assetBorrow)
+
+            uint256 rate = _protocolInterestRate(assetBorrow)
                 .mul(_utilRate)
+                .mul(spreadMultiplier)
+                .div(10**20);
+            return rate
                 .add(_dsr)
                 .div(10**20);
         } else {
@@ -1561,6 +1570,19 @@ contract LoanTokenLogicV4_Chai is AdvancedToken, OracleNotifierInterface {
         assembly {
             lowUtilBaseRate := sload(0x3d82e958c891799f357c1316ae5543412952ae5c423336f8929ed7458039c995)
         }
+    }
+
+    function _checkPause()
+        internal
+        view
+    {
+        //keccak256("iToken_FunctionPause")
+        bytes32 slot = keccak256(abi.encodePacked(msg.sig, uint256(0xd46a704bc285dbd6ff5ad3863506260b1df02812f4f857c8cc852317a6ac64f2)));
+        bool isPaused;
+        assembly {
+            isPaused := sload(slot)
+        }
+        require(!isPaused, "unauthorized");
     }
 
     function _adjustValue(
