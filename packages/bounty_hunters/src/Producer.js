@@ -30,7 +30,7 @@ const processBatchOrders = (bzx, redis, redlock, queue, blockNumber, sender, loa
     const { loanOrderHash, trader, loanEndUnixTimestampSec } = loansObjArray[i];
     const idx = position + i;
 
-    promises.push(new Promise((resolve, reject) => {
+    promises.push(new Promise((resolve) => {
       getIsLiquidationInProgress(redis, loanOrderHash).then(isLiquidationInProgress => {
         if (isLiquidationInProgress) {
           return;
@@ -69,7 +69,7 @@ const processBatchOrders = (bzx, redis, redlock, queue, blockNumber, sender, loa
         Logger.log("producer", `${idx} :: loan ${loanOrderHash}::${trader}::${loanEndUnixTimestampSec}`);
         Logger.log("producer-error", "processBatchOrders catch");
         Logger.log("producer-error", error);
-        reject();
+        resolve();
       });
     }));
   }
