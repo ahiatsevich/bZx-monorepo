@@ -23,22 +23,22 @@ process.on("SIGINT", async () => {
   unsubscribeAndExit();
 });
 
-const getLiquidationProducer = async (web3) => {
+const getLiquidationProducer = async (bzx) => {
   const { redis, redlock } = getRedisConnectivity();
-  const bzx = await getBZX(web3);
   const liquidateQueue = new Queue("liquidate", consts.connectionString);
 
   return async (sender) => processBlockLoans(bzx, redis, redlock, liquidateQueue, sender);
 };
 
-const startLiquidationProcessors = async (web3, count) => {
+const startLiquidationProcessors = async (bzx, count) => {
   const { redis, redlock } = getRedisConnectivity();
-  const bzx = await getBZX(web3);
 
   // eslint-disable-next-line no-plusplus
   for (let num = 1; num <= count; num++) {
     const liquidateQueue = new Queue("liquidate", consts.connectionString);
-    liquidateQueue.process(async (job, done) => processLiquidationQueue(bzx, redis, redlock, num, job, done));
+    liquidateQueue.process(
+      async (job, done) => processLiquidationQueue(bzx, redis, redlock, num, job, done, liquidateQueue)
+    );
   }
 };
 
@@ -58,9 +58,10 @@ const startLiquidationProcessors = async (web3, count) => {
     // const nonce = await web3.eth.getTransactionCount(sender);
     // logger.log("info", "nonce: "+nonce);
 
-    await startLiquidationProcessors(web3, consts.processorsCount);
-    await subscribeForBlocks(web3, web3WS, sender, await getLiquidationProducer(web3));
+    const bzx = await getBZX(web3);
 
+    await startLiquidationProcessors(bzx, consts.processorsCount);
+    await subscribeForBlocks(bzx, web3WS, sender, await getLiquidationProducer(bzx));
 
     Logger.log("info", "Execution finished, bye!...");
   } catch (error) {

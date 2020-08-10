@@ -3,6 +3,15 @@ const os = require("os");
 
 const createLogger = () => {
   return winston.createLogger({
+    levels: {
+      info: 0,
+      error: 1,
+      "producer-error": 2,
+      producer: 3,
+      "consumer-error": 4,
+      consumer: 5,
+      "consumer-queue": 6
+    },
     format: winston.format.combine(
       winston.format.timestamp({
         format: "YYYY-MM-DD HH:mm:ss"
@@ -10,7 +19,8 @@ const createLogger = () => {
       winston.format.printf(info => `${info.timestamp} ${info.level}: ${info.message} ${(info.stack) ? os.EOL + info.stack : ""}`)
     ),
     transports: [
-      new winston.transports.Console({ level: "debug" })
+      new winston.transports.Console({ level: "producer" }),
+      new winston.transports.File({ filename: "logs/consumer.log", level: "consumer" })
       // new winston.transports.File({ filename: "combined.log" })
     ]
   });

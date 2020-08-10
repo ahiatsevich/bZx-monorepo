@@ -1,85 +1,131 @@
+const BigNumber = require("bignumber.js");
+
 const { Logger } = require("./LoggerFactory");
+const { publishLiquidationRequest } = require("./Producer");
 const consts = require("./../consts");
 
-const liquidateLoan = async (bzx, sender, loanOrderHash, trader, blockNumber) => {
-  Logger.log("info", `\n${loanOrderHash} :: Liquidity check block number: ${blockNumber}`);
-  try {
-    const currentBlockNumber = await bzx.web3.eth.getBlockNumber();
-    Logger.log("info", `\n${loanOrderHash} :: Current block number: ${currentBlockNumber}`);
-    if (blockNumber < currentBlockNumber) {
-      Logger.log("info", `${loanOrderHash} :: Liquidation request is OLD!!! SKIPPING`);
-      return;
+const liquidateLoan = async (bzx, sender, loanOrderHash, trader, blockNumber, redis, redlock, queue, amount, force, idx) => {
+  const logs = [];
+  const errorLogs = [];
+  const log = () => {
+    Logger.log("consumer", `Liquidation of ${loanOrderHash} :: ${trader}`);
+    for (let _log of logs) {
+      Logger.log("consumer", _log);
     }
-  } catch (error) {
-    Logger.log("error", `\n${loanOrderHash} :: Block number validation error! -> ${error.message}`);
+    for (let _log of errorLogs) {
+      Logger.log("consumer-error", _log);
+    }
+  };
+  if (!force) {
+    logs.push(`Liquidity check block number: ${blockNumber}`);
+    try {
+      const currentBlockNumber = await bzx.web3.eth.getBlockNumber();
+      logs.push(`Current block number: ${currentBlockNumber}`);
+      if (blockNumber < (currentBlockNumber - consts.maxBlocksDelay) && !force) {
+        logs.push(`Liquidation request is OLD!!! SKIPPING\n`);
+        log();
+        return;
+      }
+    } catch (error) {
+      errorLogs.push(`Block number validation error! -> ${error.message}`);
+    }
   }
 
-  Logger.log("info", `${loanOrderHash} :: Loan is UNSAFE! Attempting to liquidate...`);
+  logs.push(`Attempting to liquidate...`);
   const txOpts = {
     from: sender,
-    // gas: 1000000, // gas estimated in bzx.js
-    // gasPrice: web3.utils.toWei(`5`, `gwei`).toString()
-    gasPrice: consts.defaultGasPrice
+    gasPrice: BigNumber(bzx.gasPrice || consts.defaultGasPrice).times(consts.gasPriceMultiplier)
   };
 
-  const txObj = await bzx.liquidateLoan({
-    loanOrderHash,
-    trader,
-    getObject: true
-  });
+  const txObj = await bzx.liquidateLoan(loanOrderHash, trader, amount, true);
 
   try {
     const gasEstimate = await txObj.estimateGas(txOpts);
-
-    // logger.log(gasEstimate);
-    txOpts.gas = Math.round(gasEstimate + gasEstimate * 0.1);
+    txOpts.gas = Math.round(gasEstimate + gasEstimate * 0.2);
     const request = txObj.send(txOpts);
     request.once("transactionHash", hash => {
-      Logger.log("info", `\n${loanOrderHash} :: Transaction submitted. Tx hash: ${hash}`);
+      logs.push(`Transaction submitted. Tx hash: ${hash}`);
     });
 
-    await request();
-    Logger.log("info", `\n${loanOrderHash} :: Liquidation complete!`);
+    await request;
+
+    if (amount != 0) {
+      const remaining = await bzx.getCloseAmount(loanOrderHash, trader);
+      if (remaining != 0) {
+        logs.push(`OK. Attempting to liquidate remaining amount ${remaining}`);
+        const request = { blockNumber, loanOrderHash, sender, trader, amount: 0, force: true };
+        publishLiquidationRequest(idx, redis, redlock, queue, request);
+      }
+    } else {
+      logs.push(`Liquidation complete!\n`);
+    }
   } catch (error) {
-    Logger.log("error", `\n${loanOrderHash} :: Liquidation error! -> ${error.message}`);
+    if (error.message.search('out of gas') >= 0)
+    {
+      if (amount === 0) {
+        amount = await bzx.getCloseAmount(loanOrderHash, trader);
+      }
+      const oldAmount = amount;
+      amount = (new BigNumber(amount)).div(2).integerValue(BigNumber.ROUND_CEIL);
+
+      logs.push(`OOG. Attempting to liquidate with a lower amount ${oldAmount} >> ${amount}`);
+
+      const request = { blockNumber, loanOrderHash, sender, trader, amount, force: true };
+      publishLiquidationRequest(idx, redis, redlock, queue, request);
+    } else {
+      errorLogs.push(`${error.message}\n`);
+    }
   }
+
+  log();
 };
 
-const processLiquidationQueue = async (bzx, redis, redlock, processorNumber, job, done) => {
+const processLiquidationQueue = async (bzx, redis, redlock, processorNumber, job, done, queue) => {
   Logger.log(
-    "info",
+    "consumer-queue",
     `processing(${processorNumber}) prepare ${job.data.blockNumber.toString()}:${job.data.loanOrderHash}`
   );
 
   await redlock.lock("bzx:processing:lock", 100).then(lock => {
-    redis.set(`bzx:liquidate:${job.data.loanOrderHash}`, 1, "EX", 20000);
+    redis.set(`bzx:liquidate:${job.data.loanOrderHash}:${job.data.trader}`, 1, "EX", 20000);
     lock.unlock();
   });
 
   Logger.log(
-    "info",
+    "consumer-queue",
     `processing(${processorNumber}) start ${job.data.blockNumber.toString()}:${job.data.loanOrderHash}`
   );
 
-  await liquidateLoan(bzx, job.data.sender, job.data.loanOrderHash, job.data.trader, job.data.blockNumber).then(() => {
-    Logger.log(
-      "info",
-      `processing(${processorNumber}) done ${job.data.blockNumber.toString()}:${job.data.loanOrderHash}`
-    );
+  await liquidateLoan(
+    bzx,
+    job.data.sender,
+    job.data.loanOrderHash,
+    job.data.trader,
+    job.data.blockNumber,
+    redis,
+    redlock,
+    queue,
+    job.data.amount || 0,
+    job.data.force || false,
+    job.data.idx
+  );
 
-    redlock.lock("bzx:processing:lock", 100).then(lock => {
-      redis.del(`bzx:liquidate:${job.data.loanOrderHash}`).then(() => {
-        done();
-      });
+  Logger.log(
+    "consumer-queue",
+    `processing(${processorNumber}) done ${job.data.blockNumber.toString()}:${job.data.loanOrderHash}`
+  );
 
-      lock.unlock();
+  redlock.lock("bzx:processing:lock", 100).then(lock => {
+    redis.del(`bzx:liquidate:${job.data.loanOrderHash}:${job.data.trader}`).then(() => {
+      done();
     });
-
-    Logger.log(
-      "info",
-      `processing(${processorNumber}) finished ${job.data.blockNumber.toString()}:${job.data.loanOrderHash}`
-    );
+    lock.unlock();
   });
+
+  Logger.log(
+    "consumer-queue",
+    `processing(${processorNumber}) finished ${job.data.blockNumber.toString()}:${job.data.loanOrderHash}`
+  );
 };
 
 module.exports = {

@@ -13,7 +13,7 @@ const getWeb3 = (network) => {
     if (consts.walletType === "mnemonic") {
 
       const infuraAuth = secrets.infura_apikey ? `${secrets.infura_apikey}/` : "";
-      provider = new HDWalletProvider(secrets.mnemonic[network], `https://${network}.infura.io/${infuraAuth}`);
+      provider = new HDWalletProvider(secrets.mnemonic[network], `https://${network}.infura.io/v3/${infuraAuth}`);
       // https://github.com/ethereum/web3.js/issues/1559
       // but web3@1.0.0-beta.36 is not yet available
       providerWS = new Web3.providers.WebsocketProvider(`wss://${network}.infura.io/ws`);
@@ -29,6 +29,8 @@ const getWeb3 = (network) => {
       const privateKey = secrets.private_key[network];
       provider = new PrivateKeyProvider(privateKey, `https://${network}.infura.io/${infuraAuth}`);
       providerWS = new Web3.providers.WebsocketProvider(`wss://${network}.infura.io/ws`);
+      // provider = new PrivateKeyProvider(privateKey, `https://eth-${network}.alchemyapi.io/jsonrpc/${secrets.alchemy_apikey}`);
+      // providerWS = new Web3.providers.WebsocketProvider(`wss://eth-${network}.ws.alchemyapi.io/ws/${secrets.alchemy_apikey}`);
     } else {
       process.exit();
     }

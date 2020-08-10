@@ -3,95 +3,107 @@ const moment = require("moment");
 const { Logger } = require("./LoggerFactory");
 const consts = require("./../consts");
 
-const getIsLiquidationInProgress = (redis, loanOrderHash) => redis.get(`bzx:liquidate:${loanOrderHash}`);
+const getIsLiquidationInProgress = (redis, loanOrderHash, trader) => redis.get(`bzx:liquidate:${loanOrderHash}:${trader}`);
 
-const publishLiquidationRequest = (redis, redlock, liquidateQueue, request) => {
-  Logger.log("info", `check processing ${request.blockNumber}:${request.loanOrderHash}`);
-
+const publishLiquidationRequest = (idx, redis, redlock, liquidateQueue, request) => {
+  request.idx = idx;
   redlock.lock("bzx:processing:lock", 250).then(lock => {
-    getIsLiquidationInProgress(redis, request.loanOrderHash).then(e => {
+    if (request.force) {
+      liquidateQueue.add(request).then(() => lock.unlock());
+      return;
+    }
+    getIsLiquidationInProgress(redis, request.loanOrderHash, request.trader).then(e => {
       if (e) {
-        Logger.log("info", `submit skip ${request.blockNumber}:${request.loanOrderHash}`);
+        Logger.log("consumer", `${idx} :: submit skip ${request.blockNumber}:${request.loanOrderHash}`);
         lock.unlock();
       } else {
-        Logger.log("info", `submit ${request.blockNumber}:${request.loanOrderHash}`);
         liquidateQueue.add(request).then(() => lock.unlock());
       }
     });
   });
 };
 
-const processBatchOrders = async (bzx, redis, redlock, queue, blockNumber, sender, loansObjArray, position) => {
-  /* eslint no-plusplus: ["error", { "allowForLoopAfterthoughts": true }] */
-  Logger.log("info", `Sender account: ${sender}`);
+const processBatchOrders = (bzx, redis, redlock, queue, blockNumber, sender, loansObjArray, position) => {
+  /* eslint no-plusplus: ["producer-error", { "allowForLoopAfterthoughts": true }] */
+  const promises = [];
   for (let i = 0; i < loansObjArray.length; i++) {
-    try {
-      const { loanOrderHash, trader, loanEndUnixTimestampSec } = loansObjArray[i];
+    const { loanOrderHash, trader, loanEndUnixTimestampSec } = loansObjArray[i];
+    const idx = position + i;
 
-      const isLiquidationInProgress = await getIsLiquidationInProgress(redis, loanOrderHash);
-      if (isLiquidationInProgress) {
-        continue;
-      }
+    promises.push(new Promise((resolve) => {
+      getIsLiquidationInProgress(redis, loanOrderHash).then(isLiquidationInProgress => {
+        if (isLiquidationInProgress) {
+          return;
+        }
+        return bzx.getMarginLevels(loanOrderHash, trader);
+      }).then(marginData => {
 
-      const idx = position + i;
-      Logger.log("info", `${idx} :: loanOrderHash: ${loanOrderHash}`);
-      Logger.log("info", `${idx} :: trader: ${trader}`);
-      Logger.log("info", `${idx} :: loanEndUnixTimestampSec: ${loanEndUnixTimestampSec}`);
-      const marginData = await bzx.getMarginLevels({
-        loanOrderHash,
-        trader
+        if (!marginData) {
+          marginData = {
+            initialMarginAmount: 0,
+            maintenanceMarginAmount: 0,
+            currentMarginAmount: 0
+          }
+        }
+
+        const { initialMarginAmount, maintenanceMarginAmount, currentMarginAmount } = marginData;
+
+        const isUnSafe = !BigNumber(currentMarginAmount).gt(maintenanceMarginAmount);
+
+        const expireDate = moment(loanEndUnixTimestampSec * 1000).utc();
+        const isExpired = moment(moment().utc()).isAfter(expireDate);
+
+        if (isExpired || isUnSafe) {
+          Logger.log("producer", `${idx} :: loan ${loanOrderHash}::${trader}::${loanEndUnixTimestampSec}`);
+          Logger.log(
+            "producer",
+            `${idx} :: initial/maintenance/current ${initialMarginAmount}/${maintenanceMarginAmount}/${currentMarginAmount}`
+          );
+          Logger.log("producer", `${idx} :: Loan is not safe. Processing ${blockNumber}\n`);
+          publishLiquidationRequest(idx, redis, redlock, queue, { blockNumber, loanOrderHash, sender, trader });
+        } else {
+          Logger.log("producer", `${idx} :: Loan ${loanOrderHash}::${trader} is safe.\n`);
+        }
+        resolve();
+      }).catch(error => {
+        Logger.log("producer", `${idx} :: loan ${loanOrderHash}::${trader}::${loanEndUnixTimestampSec}`);
+        Logger.log("producer-error", "processBatchOrders catch");
+        Logger.log("producer-error", error);
+        resolve();
       });
-      // logger.log("info",  marginData);
-      const { initialMarginAmount, maintenanceMarginAmount, currentMarginAmount } = marginData;
-      Logger.log("info", `${idx} :: initialMarginAmount: ${initialMarginAmount}`);
-      Logger.log("info", `${idx} :: maintenanceMarginAmount: ${maintenanceMarginAmount}`);
-      Logger.log("info", `${idx} :: currentMarginAmount: ${currentMarginAmount}`);
-
-      const isUnSafe = !BigNumber(currentMarginAmount).gt(maintenanceMarginAmount);
-
-      const expireDate = moment(loanEndUnixTimestampSec * 1000).utc();
-      const isExpired = moment(moment().utc()).isAfter(expireDate);
-
-      if (isExpired || isUnSafe) {
-        await publishLiquidationRequest(redis, redlock, queue, { blockNumber, loanOrderHash, sender, trader });
-      } else {
-        Logger.log("info", `${idx} :: Loan is safe.\n`);
-      }
-    } catch (error) {
-      Logger.log("error", "processBatchOrders catch");
-      Logger.log("error", error);
-    }
+    }));
   }
-
-  return loansObjArray.length;
+  return Promise.all(promises);
 };
 
 const processBlockLoans = async (bzx, redis, redlock, queue, sender) => {
   let position = 0;
+
+  // noinspection ES6MissingAwait
+  bzx.getGasPrice();
+
   while (true) {
     try {
       const blockNumber = await bzx.web3.eth.getBlockNumber();
-      Logger.log("info", `Current Block: ${blockNumber}`);
+      Logger.log("producer", `Next batch. Current block: ${blockNumber}`);
+      Logger.log("producer", `Sender account: ${sender}\n`);
 
-      const loansObjArray = await bzx.getActiveLoans({
-        start: position, // starting item
-        count: consts.batchSize // max number of items returned
-      });
-      // logger.log("info", loansObjArray);
+      const loansObjArray = await bzx.getActiveLoans(position, consts.batchSize);
 
-      const loanCount = await processBatchOrders(bzx, redis, redlock, queue, blockNumber, sender, loansObjArray, position);
-      if (loanCount < consts.batchSize) {
+      await processBatchOrders(bzx, redis, redlock, queue, blockNumber, sender, loansObjArray, position);
+      if (loansObjArray.length < consts.batchSize) {
         break;
       } else {
         position += consts.batchSize;
       }
     } catch (error) {
-      Logger.log("error", "processBlockOrders catch");
-      Logger.log("error", error);
+      Logger.log("producer-error", "processBlockOrders catch");
+      Logger.log("producer-error", error);
     }
   }
 };
 
 module.exports = {
-  processBlockLoans
+  processBlockLoans,
+  publishLiquidationRequest
 };

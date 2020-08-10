@@ -7,7 +7,7 @@ let blocksSubscription;
 
 function startListeningForBlocks(web3, web3WS, sender, callback) {
   return web3WS.eth
-    .subscribe("newBlockHeaders", (error, result) => {
+    .subscribe("newBlockHeaders", (error) => {
       if (error) {
         Logger.log("error", "Subscription start:");
         Logger.log("error", error);
@@ -16,7 +16,7 @@ function startListeningForBlocks(web3, web3WS, sender, callback) {
 
       // logger.log("info", result);
     })
-    .on("data", async transaction => {
+    .on("data", async () => {
       // logger.log("info", transaction);
       Logger.log("info", "Just got block...");
       await callback(sender);
@@ -71,7 +71,7 @@ async function subscribeForBlocks(web3, web3WS, sender, callback) {
     consts.trackBlocks = false;
   }
 
-  Logger.log("info", "Waiting for blocks...");
+  Logger.log("info", "Waiting for blocks...\n");
 
   if (consts.trackBlocks) {
     blocksSubscription = startListeningForBlocks(web3, web3WS, sender, callback);
